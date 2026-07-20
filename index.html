@@ -481,7 +481,9 @@
     addAssistantBubble(shown);
     revealAvatar();
     logRow('assistant', shown);
-    history.push({ role:'assistant', content: shown });
+    // В историю модели кладём ассистента строго в JSON — иначе к 2-3 ходу модель
+    // «сползает» с формата (подтверждено замером). Пользователю показываем shown, а не это.
+    history.push({ role:'assistant', content: JSON.stringify({ answer: res.answer, followup: res.followup || '', chips: res.chips || [] }) });
     track(ev('answer_shown'));
 
     if(SHOW_CHIPS && res.chips && res.chips.length){
@@ -501,7 +503,7 @@
     addAssistantBubble(GREETING);
     revealAvatar();
     logRow('assistant', GREETING);
-    history.push({ role:'assistant', content: GREETING });
+    history.push({ role:'assistant', content: JSON.stringify({ answer: GREETING, followup: '', chips: STARTER_CHIPS }) });
     await sleep(400);
     showChips(STARTER_CHIPS, 'starter');
     scrollDown();
