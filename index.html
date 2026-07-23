@@ -283,16 +283,18 @@
 
   // ====== аналитика: GA4 + Яндекс.Метрика (префикс 8094_) ======
   var YM_ID = 96171108;
-  // К каждому событию цепляем cid (один пользователь) и sid (одна сессия-диалог),
-  // чтобы в GA4 и Метрике визиты одного человека и одного диалога склеивались.
+  // GA4 — корпоративный и общий: кастомные параметры и user_properties там не
+  // зарегистрировать, поэтому шлём ТОЛЬКО чистые события без своих полей (вариант уже
+  // зашит в имя события, а «один пользователь / одна сессия» GA4 считает сам).
+  // Связка cid/sid живёт в Яндекс.Метрике (params не требуют регистрации) и в
+  // Google-таблице, куда cid и sid пишутся с каждым сообщением.
   function track(name, extra){
+    try{ if(typeof window.gtag === 'function') window.gtag('event', name); }catch(e){}
     var p = { cid: CID, sid: SID, variant: VAR };
     if(extra) for(var k in extra) p[k] = extra[k];
-    try{ if(typeof window.gtag === 'function') window.gtag('event', name, p); }catch(e){}
-    try{ if(typeof window.ym   === 'function') window.ym(YM_ID, 'reachGoal', name, p); }catch(e){}
+    try{ if(typeof window.ym === 'function') window.ym(YM_ID, 'reachGoal', name, p); }catch(e){}
   }
   function initAnalyticsIdentity(){
-    try{ if(typeof window.gtag === 'function') window.gtag('set', 'user_properties', { alfa_cid: CID }); }catch(e){}
     try{ if(typeof window.ym === 'function'){
       window.ym(YM_ID, 'userParams', { alfa_cid: CID });
       window.ym(YM_ID, 'params', { alfa_sid: SID, alfa_variant: VAR });
