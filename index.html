@@ -283,9 +283,20 @@
 
   // ====== аналитика: GA4 + Яндекс.Метрика (префикс 8094_) ======
   var YM_ID = 96171108;
-  function track(name){
-    try{ if(typeof window.gtag === 'function') window.gtag('event', name); }catch(e){}
-    try{ if(typeof window.ym   === 'function') window.ym(YM_ID, 'reachGoal', name); }catch(e){}
+  // К каждому событию цепляем cid (один пользователь) и sid (одна сессия-диалог),
+  // чтобы в GA4 и Метрике визиты одного человека и одного диалога склеивались.
+  function track(name, extra){
+    var p = { cid: CID, sid: SID, variant: VAR };
+    if(extra) for(var k in extra) p[k] = extra[k];
+    try{ if(typeof window.gtag === 'function') window.gtag('event', name, p); }catch(e){}
+    try{ if(typeof window.ym   === 'function') window.ym(YM_ID, 'reachGoal', name, p); }catch(e){}
+  }
+  function initAnalyticsIdentity(){
+    try{ if(typeof window.gtag === 'function') window.gtag('set', 'user_properties', { alfa_cid: CID }); }catch(e){}
+    try{ if(typeof window.ym === 'function'){
+      window.ym(YM_ID, 'userParams', { alfa_cid: CID });
+      window.ym(YM_ID, 'params', { alfa_sid: SID, alfa_variant: VAR });
+    } }catch(e){}
   }
   function ev(base){ return '8094_' + base + '_var' + VAR; }
 
@@ -313,6 +324,29 @@
     }catch(e){ return 'anon'; }
   })();
 
+  // ====== сессия: диалог хранится 7 дней, пользователь видит свои сообщения ======
+  var SESSION_TTL = 7 * 24 * 60 * 60 * 1000;      // неделя
+  var SKEY = 'alfa8094_session_var' + VAR;         // своя сессия на каждый вариант
+  function loadSession(){
+    try{
+      var s = JSON.parse(localStorage.getItem(SKEY) || 'null');
+      if(!s || !s.sid || !s.ts) return null;
+      if(Date.now() - s.ts > SESSION_TTL){ localStorage.removeItem(SKEY); return null; }
+      return s;
+    }catch(e){ return null; }
+  }
+  function saveSession(){
+    try{
+      localStorage.setItem(SKEY, JSON.stringify({
+        sid: SID, ts: Date.now(),          // ts обновляется — неделя от последней активности
+        msgs: msgs, hist: history, chips: lastChips, turns: userTurns
+      }));
+    }catch(e){}
+  }
+  var RESTORED = loadSession();
+  var SID = RESTORED ? RESTORED.sid
+          : 's' + Math.random().toString(36).slice(2,8) + Date.now().toString(36);
+
   // ====== лог диалога в Google-таблицу (строка на каждое сообщение) ======
   function logRow(role, text){
     try{
@@ -323,7 +357,7 @@
       fetch(WEBHOOK_URL, {
         method:'POST', mode:'no-cors',
         headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-        body: JSON.stringify({ variant: VAR, role: role, text: text, cid: CID }),
+        body: JSON.stringify({ variant: VAR, role: role, text: text, cid: CID, sid: SID }),
         keepalive: true
       }).catch(function(){});
     }catch(e){}
@@ -407,8 +441,25 @@
 
   // ====== диалог ======
   var history = [];          // [{role, content}] для модели
+  var msgs = [];             // [{role, text}] — то, что видит пользователь (для восстановления)
+  var lastChips = [];        // активные чипсы на момент сохранения
   var userTurns = 0;         // счётчик ходов пользователя
   var busy = false;
+
+  // Восстановление сохранённого диалога: без анимации, сразу как было.
+  function restoreDialog(s){
+    history   = s.hist  || [];
+    msgs      = s.msgs  || [];
+    userTurns = s.turns || 0;
+    lastChips = s.chips || [];
+    thread.appendChild(el('div','day','Сегодня'));
+    msgs.forEach(function(m){
+      if(m.role === 'user') addUserBubble(m.text);
+      else { addAssistantBubble(m.text); revealAvatar(); }
+    });
+    if(lastChips.length) showChips(lastChips, 'chip');
+    scrollDown();
+  }
 
   function callWorker(){
     if(!WORKER_URL || WORKER_URL.indexOf('PASTE_') === 0){
@@ -446,6 +497,9 @@
     addUserBubble(text);
     logRow('user', text);
     history.push({ role:'user', content:text });
+    msgs.push({ role:'user', text:text });
+    lastChips = [];
+    saveSession();
     input.value = '';
     updateSendVisibility();
 
@@ -481,6 +535,7 @@
     addAssistantBubble(shown);
     revealAvatar();
     logRow('assistant', shown);
+    msgs.push({ role:'assistant', text: shown });
     // В историю модели кладём ассистента строго в JSON — иначе к 2-3 ходу модель
     // «сползает» с формата (подтверждено замером). Пользователю показываем shown, а не это.
     history.push({ role:'assistant', content: JSON.stringify({ answer: res.answer, followup: res.followup || '', chips: res.chips || [] }) });
@@ -489,7 +544,9 @@
     if(SHOW_CHIPS && res.chips && res.chips.length){
       await sleep(300);
       showChips(res.chips, 'chip');
+      lastChips = res.chips;
     }
+    saveSession();
     busy = false;
   }
 
@@ -504,8 +561,11 @@
     revealAvatar();
     logRow('assistant', GREETING);
     history.push({ role:'assistant', content: JSON.stringify({ answer: GREETING, followup: '', chips: STARTER_CHIPS }) });
+    msgs.push({ role:'assistant', text: GREETING });
     await sleep(400);
     showChips(STARTER_CHIPS, 'starter');
+    lastChips = STARTER_CHIPS;
+    saveSession();
     scrollDown();
   }
 
@@ -523,8 +583,14 @@
   document.getElementById('backBtn').addEventListener('click', function(e){ e.preventDefault(); });
   input.addEventListener('focus', function(){ setTimeout(scrollDown, 250); });
 
+  initAnalyticsIdentity();
   track('8094_page_view_landing_var' + VAR);
-  playIntro();
+  if(RESTORED && RESTORED.msgs && RESTORED.msgs.length){
+    restoreDialog(RESTORED);                 // возврат в течение недели — показываем прежний диалог
+    track(ev('session_resumed'));
+  } else {
+    playIntro();                             // новая сессия
+  }
 })();
 </script>
 </body>
