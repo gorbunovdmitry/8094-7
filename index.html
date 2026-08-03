@@ -268,6 +268,8 @@
   var WORKER_URL = "https://alfa-8094.dimagordima.workers.dev"; // BUILD:WORKER
   var WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx8aemvuVqg-fw3xGi2H9_-hm_JfkNoK9KTPZ2U9FjhTKnkCYIi6uA6t0N4LZ_rcnM/exec"; // BUILD:WEBHOOK
 
+  var CLIENT_TIMEOUT_MS = 25000;   // сколько ждём бэкенд, прежде чем показать ошибку
+
   var VAR = CONFIG.num;
   var HOOK = CONFIG.hook;
   var SHOW_FOLLOWUP = (HOOK !== 'control');
@@ -391,14 +393,21 @@
   function closeAssistantGroup(){ assistantRow = null; assistantCol = null; avatar = null; }
 
   var typingNode = null;
+  var slowTimer = null;
   function showTyping(){
     ensureAssistantRow();
     if(typingNode) return;
     typingNode = el('div','bubble typing','<span></span><span></span><span></span>');
     assistantCol.appendChild(typingNode);
+    // Если ответ идёт долго — показываем, что процесс жив, а не завис.
+    slowTimer = setTimeout(function(){
+      if(typingNode) typingNode.innerHTML =
+        '<span></span><span></span><span></span>' +
+        '<span style="margin-left:8px;font-size:14px;color:#a0a1a9">собираю ответ…</span>';
+    }, 6000);
     scrollDown();
   }
-  function hideTyping(){ if(typingNode){ typingNode.remove(); typingNode = null; } }
+  function hideTyping(){ if(slowTimer){ clearTimeout(slowTimer); slowTimer=null; } if(typingNode){ typingNode.remove(); typingNode = null; } }
   function addAssistantBubble(text){
     ensureAssistantRow();
     var b = el('div','bubble');
@@ -472,14 +481,20 @@
         chips: ["Показать", "Не сейчас"]
       });
     }
-    return fetch(WORKER_URL, {
+    // Таймаут на клиенте: если бэкенд завис, не держим пользователя в «печатает…».
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var killer = setTimeout(function(){ if(ctl) ctl.abort(); }, CLIENT_TIMEOUT_MS);
+    var opts = {
       method:'POST',
       headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ hook: HOOK, messages: history })
-    }).then(function(r){
+    };
+    if(ctl) opts.signal = ctl.signal;
+    return fetch(WORKER_URL, opts).then(function(r){
+      clearTimeout(killer);
       if(!r.ok) throw new Error('worker ' + r.status);
       return r.json();
-    });
+    }).catch(function(e){ clearTimeout(killer); throw e; });
   }
 
   async function sendMessage(text, via){   // via: 'starter' | 'chip' | 'typed'
@@ -513,7 +528,7 @@
       res = await callWorker();
     }catch(e){
       hideTyping();
-      addAssistantBubble('Не получилось ответить, попробуйте ещё раз.');
+      addAssistantBubble('Что-то долго думаю. Попробуйте задать вопрос ещё раз.');
       revealAvatar();
       track(ev('error'));
       busy = false;
@@ -522,7 +537,7 @@
     hideTyping();
 
     if(res.error || !res.answer){
-      addAssistantBubble('Не получилось ответить, попробуйте ещё раз.');
+      addAssistantBubble('Что-то долго думаю. Попробуйте задать вопрос ещё раз.');
       revealAvatar();
       track(ev('error'));
       busy = false;
