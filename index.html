@@ -160,6 +160,11 @@
   .typing span:nth-child(2){ animation-delay:.18s; }
   .typing span:nth-child(3){ animation-delay:.36s; }
   @keyframes blink{ 0%,80%,100%{opacity:.35; transform:translateY(0);} 40%{opacity:1; transform:translateY(-3px);} }
+  /* подсказка «собираю ответ…» рядом с точками: не сжимается и не переносится */
+  .typing .hint{
+    margin-left:8px; font-size:14px; color:var(--muted);
+    white-space:nowrap; flex:0 0 auto; align-self:center;
+  }
 
   /* suggestion chips */
   .chips-row{ padding:2px 12px 0 64px; }
@@ -403,7 +408,7 @@
     slowTimer = setTimeout(function(){
       if(typingNode) typingNode.innerHTML =
         '<span></span><span></span><span></span>' +
-        '<span style="margin-left:8px;font-size:14px;color:#a0a1a9">собираю ответ…</span>';
+        '<span class="hint">собираю ответ…</span>';
     }, 6000);
     scrollDown();
   }
