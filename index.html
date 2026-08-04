@@ -274,8 +274,10 @@
   var CONFIG = {"num": 7, "hook": "check-understanding"}; // BUILD:CONFIG
   var WORKER_URL = "https://alfa-8094.dimagordima.workers.dev"; // BUILD:WORKER
   var WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx8aemvuVqg-fw3xGi2H9_-hm_JfkNoK9KTPZ2U9FjhTKnkCYIi6uA6t0N4LZ_rcnM/exec"; // BUILD:WEBHOOK
+  var BACKUP_URL = "https://script.google.com/macros/s/AKfycbx-bLBQZ1ZzzxrB3b5X-gJq1wUNNbnd0c7JmHxWQXFZpaqgVMYj6rOf6GhfUs8fEPs/exec"; // BUILD:BACKUP
 
-  var CLIENT_TIMEOUT_MS = 25000;   // сколько ждём бэкенд, прежде чем показать ошибку
+  var PRIMARY_TIMEOUT_MS = 5000;    // ждём Cloudflare; он быстрый, но в части сетей недоступен
+  var BACKUP_TIMEOUT_MS  = 40000;   // резерв на Apps Script: обычно 5–7 с, но после простоя бывает холодный старт
 
   var VAR = CONFIG.num;
   var HOOK = CONFIG.hook;
@@ -479,29 +481,45 @@
     scrollDown();
   }
 
+  function fetchJSON(url, body, ms, ctype){
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var killer = setTimeout(function(){ if(ctl) ctl.abort(); }, ms);
+    var opts = { method:'POST', headers:{ 'Content-Type': ctype }, body: body };
+    if(ctl) opts.signal = ctl.signal;
+    return fetch(url, opts).then(function(r){
+      clearTimeout(killer);
+      if(!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).catch(function(e){ clearTimeout(killer); throw e; });
+  }
+
+  // Основной путь — Cloudflare Worker (быстрый). В части сетей (мобильный интернет
+  // без VPN) домены *.workers.dev недоступны, поэтому есть резерв на Apps Script.
+  // Если основной путь один раз не сработал — дальше в этой сессии сразу идём на резерв.
+  var primaryDead = false;
+  try{ primaryDead = sessionStorage.getItem('alfa8094_primary_dead') === '1'; }catch(e){}
+  var backupReady = BACKUP_URL && BACKUP_URL.indexOf('PASTE_') !== 0;
+
   function callWorker(){
     if(!WORKER_URL || WORKER_URL.indexOf('PASTE_') === 0){
-      // локальный режим без воркера — мок-ответ
       return Promise.resolve({
         answer: "Это локальный режим без подключённой модели. Задеплойте Cloudflare Worker и впишите его URL в build.py.",
         followup: "Показать, как это сделать?",
         chips: ["Показать", "Не сейчас"]
       });
     }
-    // Таймаут на клиенте: если бэкенд завис, не держим пользователя в «печатает…».
-    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
-    var killer = setTimeout(function(){ if(ctl) ctl.abort(); }, CLIENT_TIMEOUT_MS);
-    var opts = {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({ hook: HOOK, messages: history })
-    };
-    if(ctl) opts.signal = ctl.signal;
-    return fetch(WORKER_URL, opts).then(function(r){
-      clearTimeout(killer);
-      if(!r.ok) throw new Error('worker ' + r.status);
-      return r.json();
-    }).catch(function(e){ clearTimeout(killer); throw e; });
+    var body = JSON.stringify({ hook: HOOK, messages: history });
+    if(primaryDead && backupReady){
+      return fetchJSON(BACKUP_URL, body, BACKUP_TIMEOUT_MS, 'text/plain;charset=utf-8');
+    }
+    return fetchJSON(WORKER_URL, body, PRIMARY_TIMEOUT_MS, 'application/json')
+      .catch(function(e){
+        if(!backupReady) throw e;
+        primaryDead = true;
+        try{ sessionStorage.setItem('alfa8094_primary_dead','1'); }catch(err){}
+        track(ev('fallback_proxy'));   // видно в аналитике, как часто нужен резерв
+        return fetchJSON(BACKUP_URL, body, BACKUP_TIMEOUT_MS, 'text/plain;charset=utf-8');
+      });
   }
 
   async function sendMessage(text, via){   // via: 'starter' | 'chip' | 'typed'
