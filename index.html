@@ -272,12 +272,13 @@
   // Строки ниже заменяет build.py — не убирайте маркеры BUILD:.
   // hook: control | deep-dive | personalize | next-action | related-topic | choice | check-understanding | text-only
   var CONFIG = {"num": 7, "hook": "check-understanding"}; // BUILD:CONFIG
-  var WORKER_URL = "https://alfa-8094.dimagordima.workers.dev"; // BUILD:WORKER
+  var WORKER_URL = "https://functions.yandexcloud.net/d4e996tcg0cubvcc2oh0"; // BUILD:WORKER
   var WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx8aemvuVqg-fw3xGi2H9_-hm_JfkNoK9KTPZ2U9FjhTKnkCYIi6uA6t0N4LZ_rcnM/exec"; // BUILD:WEBHOOK
   var BACKUP_URL = "https://script.google.com/macros/s/AKfycbx-bLBQZ1ZzzxrB3b5X-gJq1wUNNbnd0c7JmHxWQXFZpaqgVMYj6rOf6GhfUs8fEPs/exec"; // BUILD:BACKUP
 
-  var PRIMARY_TIMEOUT_MS = 5000;    // ждём Cloudflare; он быстрый, но в части сетей недоступен
-  var BACKUP_TIMEOUT_MS  = 40000;   // резерв на Apps Script: обычно 5–7 с, но после простоя бывает холодный старт
+  var PRIMARY_TIMEOUT_MS = 30000;   // основной путь не обрываем рано — он отвечает на 3–10 с
+  var BACKUP_TIMEOUT_MS  = 40000;   // резерв: бывает холодный старт
+  var HEDGE_AFTER_MS     = 15000;   // замер: медиана 6 с, хвост до 16 с. Раньше хеджить = дублировать запрос зря
 
   var VAR = CONFIG.num;
   var HOOK = CONFIG.hook;
@@ -500,6 +501,10 @@
   try{ primaryDead = sessionStorage.getItem('alfa8094_primary_dead') === '1'; }catch(e){}
   var backupReady = BACKUP_URL && BACKUP_URL.indexOf('PASTE_') !== 0;
 
+  // Основной путь (Cloudflare) быстрый, но в части сетей недоступен, а иногда думает 9–10 с.
+  // Поэтому не обрываем его рано, а через HEDGE_AFTER_MS параллельно запускаем резерв
+  // и берём ТОТ ОТВЕТ, КОТОРЫЙ ПРИДЁТ РАНЬШЕ. Если основной успел за 3 с — резерв
+  // не запускается вовсе (не тратим лишние запросы к модели).
   function callWorker(){
     if(!WORKER_URL || WORKER_URL.indexOf('PASTE_') === 0){
       return Promise.resolve({
@@ -509,17 +514,36 @@
       });
     }
     var body = JSON.stringify({ hook: HOOK, messages: history });
+
+    // если основной уже показал себя нерабочим — сразу резерв
     if(primaryDead && backupReady){
       return fetchJSON(BACKUP_URL, body, BACKUP_TIMEOUT_MS, 'text/plain;charset=utf-8');
     }
-    return fetchJSON(WORKER_URL, body, PRIMARY_TIMEOUT_MS, 'application/json')
-      .catch(function(e){
-        if(!backupReady) throw e;
-        primaryDead = true;
-        try{ sessionStorage.setItem('alfa8094_primary_dead','1'); }catch(err){}
-        track(ev('fallback_proxy'));   // видно в аналитике, как часто нужен резерв
-        return fetchJSON(BACKUP_URL, body, BACKUP_TIMEOUT_MS, 'text/plain;charset=utf-8');
-      });
+    if(!backupReady){
+      return fetchJSON(WORKER_URL, body, PRIMARY_TIMEOUT_MS, 'application/json');
+    }
+
+    return new Promise(function(resolve, reject){
+      var settled = false, failures = 0, hedgeStarted = false, hedgeTimer = null;
+      function win(d){ if(!settled){ settled = true; clearTimeout(hedgeTimer); resolve(d); } }
+      function lose(e){
+        failures++;
+        if(!settled && failures >= 2) { settled = true; clearTimeout(hedgeTimer); reject(e); }
+      }
+      function startBackup(fromError){
+        if(hedgeStarted || settled) return;
+        hedgeStarted = true;
+        if(fromError){                       // основной недоступен в этой сети
+          primaryDead = true;
+          try{ sessionStorage.setItem('alfa8094_primary_dead','1'); }catch(err){}
+          track(ev('fallback_proxy'));
+        }
+        fetchJSON(BACKUP_URL, body, BACKUP_TIMEOUT_MS, 'text/plain;charset=utf-8').then(win, lose);
+      }
+      fetchJSON(WORKER_URL, body, PRIMARY_TIMEOUT_MS, 'application/json')
+        .then(win, function(e){ startBackup(true); lose(e); });
+      hedgeTimer = setTimeout(function(){ startBackup(false); }, HEDGE_AFTER_MS);
+    });
   }
 
   async function sendMessage(text, via){   // via: 'starter' | 'chip' | 'typed'
