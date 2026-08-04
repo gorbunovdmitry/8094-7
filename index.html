@@ -166,6 +166,7 @@
     width:auto; height:auto; border-radius:0; background:none; animation:none;
     margin-left:8px; font-size:14px; color:var(--muted);
     white-space:nowrap; flex:0 0 auto; align-self:center;
+    opacity:1; transition:opacity .18s ease;   /* мягкая смена подписи каждые 4 с */
   }
 
   /* suggestion chips */
@@ -404,6 +405,11 @@
 
   var typingNode = null;
   var slowTimer = null;
+  var hintTimer = null;
+  // Подписи при долгом ответе: сменяются каждые 4 с, на последней останавливаются.
+  // Порядок только вперёд — возврат к «собираю ответ» после «почти готово» читался бы
+  // как откат назад.
+  var HINTS = ['собираю ответ…', 'ещё пару секунд…', 'почти готово…'];
   function showTyping(){
     ensureAssistantRow();
     if(typingNode) return;
@@ -411,13 +417,26 @@
     assistantCol.appendChild(typingNode);
     // Если ответ идёт долго — показываем, что процесс жив, а не завис.
     slowTimer = setTimeout(function(){
-      if(typingNode) typingNode.innerHTML =
+      if(!typingNode) return;
+      typingNode.innerHTML =
         '<span></span><span></span><span></span>' +
-        '<span class="hint">собираю ответ…</span>';
+        '<span class="hint">' + HINTS[0] + '</span>';
+      var hint = typingNode.querySelector('.hint');
+      var i = 0;
+      hintTimer = setInterval(function(){
+        i++;
+        if(!typingNode || !hint || i >= HINTS.length){ clearInterval(hintTimer); hintTimer = null; return; }
+        hint.style.opacity = '0';
+        setTimeout(function(){ if(hint){ hint.textContent = HINTS[i]; hint.style.opacity = '1'; } }, 180);
+      }, 4000);
     }, 6000);
     scrollDown();
   }
-  function hideTyping(){ if(slowTimer){ clearTimeout(slowTimer); slowTimer=null; } if(typingNode){ typingNode.remove(); typingNode = null; } }
+  function hideTyping(){
+    if(slowTimer){ clearTimeout(slowTimer); slowTimer=null; }
+    if(hintTimer){ clearInterval(hintTimer); hintTimer=null; }
+    if(typingNode){ typingNode.remove(); typingNode = null; }
+  }
   function addAssistantBubble(text){
     ensureAssistantRow();
     var b = el('div','bubble');
