@@ -162,6 +162,8 @@
   @keyframes blink{ 0%,80%,100%{opacity:.35; transform:translateY(0);} 40%{opacity:1; transform:translateY(-3px);} }
   /* подсказка «собираю ответ…» рядом с точками: не сжимается и не переносится */
   .typing .hint{
+    /* сбрасываем стили точки (.typing span задаёт 8x8, фон и анимацию) */
+    width:auto; height:auto; border-radius:0; background:none; animation:none;
     margin-left:8px; font-size:14px; color:var(--muted);
     white-space:nowrap; flex:0 0 auto; align-self:center;
   }
